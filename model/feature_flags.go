@@ -25,24 +25,22 @@ type FeatureFlags struct {
 	// AppsEnabled toggles the Apps framework functionalities both in server and client side
 	AppsEnabled bool
 
-	// AppBarEnabled toggles the App Bar component on client side
-	AppBarEnabled bool
-
 	// Feature flags to control plugin versions
 	PluginPlaybooks  string `plugin_id:"playbooks"`
 	PluginApps       string `plugin_id:"com.mattermost.apps"`
 	PluginFocalboard string `plugin_id:"focalboard"`
+	PluginCalls      string `plugin_id:"com.mattermost.calls"`
 
 	PermalinkPreviews bool
 
 	// Enable Calls plugin support in the mobile app
 	CallsMobile bool
 
+	// CallsEnabled controls whether or not the Calls plugin should be enabled
+	CallsEnabled bool
+
 	// A dash separated list for feature flags to turn on for Boards
 	BoardsFeatureFlags string
-
-	// A/B test for the add members to channel button, possible values = ("top", "bottom")
-	AddMembersToChannel string
 
 	// Enable Create First Channel
 	GuidedChannelCreation bool
@@ -66,6 +64,12 @@ type FeatureFlags struct {
 	GraphQL bool
 
 	InsightsEnabled bool
+
+	CloudFree bool
+
+	CommandPalette bool
+
+	AdvancedTextEditor bool
 }
 
 func (f *FeatureFlags) SetDefaults() {
@@ -73,14 +77,12 @@ func (f *FeatureFlags) SetDefaults() {
 	f.TestBoolFeature = false
 	f.CollapsedThreads = true
 	f.EnableRemoteClusterService = false
-	f.AppsEnabled = false
-	f.AppBarEnabled = false
+	f.AppsEnabled = true
 	f.PluginApps = ""
 	f.PluginFocalboard = ""
 	f.PermalinkPreviews = true
 	f.CallsMobile = false
 	f.BoardsFeatureFlags = ""
-	f.AddMembersToChannel = "top"
 	f.GuidedChannelCreation = false
 	f.InviteToTeam = "none"
 	f.CustomGroups = true
@@ -90,7 +92,11 @@ func (f *FeatureFlags) SetDefaults() {
 	f.UseCaseOnboarding = true
 	f.GraphQL = false
 	f.InsightsEnabled = false
+	f.CloudFree = false
+	f.CommandPalette = false
+	f.AdvancedTextEditor = false
 }
+
 func (f *FeatureFlags) Plugins() map[string]string {
 	rFFVal := reflect.ValueOf(f).Elem()
 	rFFType := reflect.TypeOf(f).Elem()

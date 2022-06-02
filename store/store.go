@@ -102,6 +102,7 @@ type TeamStore interface {
 	Save(team *model.Team) (*model.Team, error)
 	Update(team *model.Team) (*model.Team, error)
 	Get(id string) (*model.Team, error)
+	GetMany(ids []string) ([]*model.Team, error)
 	GetByName(name string) (*model.Team, error)
 	GetByNames(name []string) ([]*model.Team, error)
 	SearchAll(opts *model.TeamSearch) ([]*model.Team, error)
@@ -125,7 +126,7 @@ type TeamStore interface {
 	GetMembersByIds(teamID string, userIds []string, restrictions *model.ViewUsersRestrictions) ([]*model.TeamMember, error)
 	GetTotalMemberCount(teamID string, restrictions *model.ViewUsersRestrictions) (int64, error)
 	GetActiveMemberCount(teamID string, restrictions *model.ViewUsersRestrictions) (int64, error)
-	GetTeamsForUser(ctx context.Context, userID string) ([]*model.TeamMember, error)
+	GetTeamsForUser(ctx context.Context, userID, excludeTeamID string, includeDeleted bool) ([]*model.TeamMember, error)
 	GetTeamsForUserWithPagination(userID string, page, perPage int) ([]*model.TeamMember, error)
 	GetChannelUnreadsForAllTeams(excludeTeamID, userID string) ([]*model.ChannelUnread, error)
 	GetChannelUnreadsForTeam(teamID, userID string) ([]*model.ChannelUnread, error)
@@ -166,9 +167,9 @@ type ChannelStore interface {
 	UpdateSidebarChannelCategoryOnMove(channel *model.Channel, newTeamID string) error
 	ClearSidebarOnTeamLeave(userID, teamID string) error
 	Get(id string, allowFromCache bool) (*model.Channel, error)
+	GetMany(ids []string, allowFromCache bool) (model.ChannelList, error)
 	InvalidateChannel(id string)
 	InvalidateChannelByName(teamID, name string)
-	GetFromMaster(id string) (*model.Channel, error)
 	Delete(channelID string, time int64) error
 	Restore(channelID string, time int64) error
 	SetDeleteAt(channelID string, deleteAt int64, updateAt int64) error
@@ -233,9 +234,9 @@ type ChannelStore interface {
 	GetMembersForUser(teamID string, userID string) (model.ChannelMembers, error)
 	GetTeamMembersForChannel(channelID string) ([]string, error)
 	GetMembersForUserWithPagination(userID string, page, perPage int) (model.ChannelMembersWithTeamData, error)
-	GetMembersForUserWithCursor(userID, afterChannel, afterUser string, limit, lastUpdateAt int) (model.ChannelMembers, error)
-	Autocomplete(userID, term string, includeDeleted bool) (model.ChannelListWithTeamData, error)
-	AutocompleteInTeam(teamID, userID, term string, includeDeleted bool) (model.ChannelList, error)
+	GetMembersForUserWithCursor(userID, teamID string, opts *ChannelMemberGraphQLSearchOpts) (model.ChannelMembers, error)
+	Autocomplete(userID, term string, includeDeleted, isGuest bool) (model.ChannelListWithTeamData, error)
+	AutocompleteInTeam(teamID, userID, term string, includeDeleted, isGuest bool) (model.ChannelList, error)
 	AutocompleteInTeamForSearch(teamID string, userID string, term string, includeDeleted bool) (model.ChannelList, error)
 	SearchAllChannels(term string, opts ChannelSearchOpts) (model.ChannelListWithTeamData, int64, error)
 	SearchInTeam(teamID string, term string, includeDeleted bool) (model.ChannelList, error)
@@ -280,6 +281,10 @@ type ChannelStore interface {
 	SetShared(channelId string, shared bool) error
 	// GetTeamForChannel returns the team for a given channelID.
 	GetTeamForChannel(channelID string) (*model.Team, error)
+
+	// Insights
+	GetTopChannelsForTeamSince(teamID string, userID string, since int64, offset int, limit int) (*model.TopChannelList, error)
+	GetTopChannelsForUserSince(userID string, teamID string, since int64, offset int, limit int) (*model.TopChannelList, error)
 }
 
 type ChannelMemberHistoryStore interface {
@@ -343,7 +348,7 @@ type PostStore interface {
 	Search(teamID string, userID string, params *model.SearchParams) (*model.PostList, error)
 	AnalyticsUserCountsWithPostsByDay(teamID string) (model.AnalyticsRows, error)
 	AnalyticsPostCountsByDay(options *model.AnalyticsPostCountsOptions) (model.AnalyticsRows, error)
-	AnalyticsPostCount(teamID string, mustHaveFile bool, mustHaveHashtag bool) (int64, error)
+	AnalyticsPostCount(options *model.PostCountOptions) (int64, error)
 	ClearCaches()
 	InvalidateLastPostTimeCache(channelID string)
 	GetLastPostRowCreateAt() (int64, error)
@@ -361,6 +366,8 @@ type PostStore interface {
 	GetRepliesForExport(parentID string) ([]*model.ReplyForExport, error)
 	GetDirectPostParentsForExportAfter(limit int, afterID string) ([]*model.DirectPostForExport, error)
 	SearchPostsForUser(paramsList []*model.SearchParams, userID, teamID string, page, perPage int) (*model.PostSearchResults, error)
+	GetRecentSearchesForUser(userID string) ([]*model.SearchParams, error)
+	LogRecentSearch(userID string, searchQuery []byte, createAt int64) error
 	GetOldestEntityCreationTime() (int64, error)
 	HasAutoResponsePostByUserSince(options model.GetPostsSinceOptions, userId string) (bool, error)
 	GetPostsSinceForSync(options model.GetPostsSinceForSyncOptions, cursor model.GetPostsSinceForSyncCursor, limit int) ([]*model.Post, model.GetPostsSinceForSyncCursor, error)
@@ -678,6 +685,8 @@ type ReactionStore interface {
 	BulkGetForPosts(postIds []string) ([]*model.Reaction, error)
 	DeleteOrphanedRows(limit int) (int64, error)
 	PermanentDeleteBatch(endTime int64, limit int64) (int64, error)
+	GetTopForTeamSince(teamID string, userID string, since int64, offset int, limit int) (*model.TopReactionList, error)
+	GetTopForUserSince(userID string, teamID string, since int64, offset int, limit int) (*model.TopReactionList, error)
 }
 
 type JobStore interface {
@@ -853,6 +862,8 @@ type GroupStore interface {
 	// GroupCount returns the total count of records in the UserGroups table.
 	GroupCount() (int64, error)
 
+	GroupCountBySource(source model.GroupSource) (int64, error)
+
 	// GroupTeamCount returns the total count of records in the GroupTeams table.
 	GroupTeamCount() (int64, error)
 
@@ -973,4 +984,14 @@ type ThreadMembershipOpts struct {
 	// UpdateParticipants indicates whether or not the thread's participants list
 	// should be updated.
 	UpdateParticipants bool
+}
+
+// ChannelMemberGraphQLSearchOpts contains the options for a graphQL query
+// to get the channel members.
+type ChannelMemberGraphQLSearchOpts struct {
+	AfterChannel string
+	AfterUser    string
+	Limit        int
+	LastUpdateAt int
+	ExcludeTeam  bool
 }

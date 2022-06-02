@@ -598,11 +598,9 @@ func (a *App) UpdatePost(c *request.Context, post *model.Post, safeUpdate bool) 
 		return nil, err
 	}
 
-	if a.Srv().License() != nil {
-		if *a.Config().ServiceSettings.PostEditTimeLimit != -1 && model.GetMillis() > oldPost.CreateAt+int64(*a.Config().ServiceSettings.PostEditTimeLimit*1000) && post.Message != oldPost.Message {
-			err = model.NewAppError("UpdatePost", "api.post.update_post.permissions_time_limit.app_error", map[string]interface{}{"timeLimit": *a.Config().ServiceSettings.PostEditTimeLimit}, "", http.StatusBadRequest)
-			return nil, err
-		}
+	if *a.Config().ServiceSettings.PostEditTimeLimit != -1 && model.GetMillis() > oldPost.CreateAt+int64(*a.Config().ServiceSettings.PostEditTimeLimit*1000) && post.Message != oldPost.Message {
+		err = model.NewAppError("UpdatePost", "api.post.update_post.permissions_time_limit.app_error", map[string]interface{}{"timeLimit": *a.Config().ServiceSettings.PostEditTimeLimit}, "", http.StatusBadRequest)
+		return nil, err
 	}
 
 	channel, err := a.GetChannel(oldPost.ChannelId)
@@ -734,15 +732,23 @@ func (a *App) publishWebsocketEventForPermalinkPost(post *model.Post, message *m
 		return false, err
 	}
 
-	for _, cm := range channelMembers {
-		postForUser, err := a.SanitizePostMetadataForUser(post, cm.UserId)
-		if err != nil {
-			if err.StatusCode == http.StatusNotFound {
-				mlog.Warn("channel containing permalinked post not found", mlog.String("referenced_channel_id", previewedPost.ChannelId))
-				return false, nil
-			}
-			return false, err
+	permalinkPreviewedChannel, err := a.GetChannel(previewedPost.ChannelId)
+	if err != nil {
+		if err.StatusCode == http.StatusNotFound {
+			mlog.Warn("channel containing permalinked post not found", mlog.String("referenced_channel_id", previewedPost.ChannelId))
+			return false, nil
 		}
+		return false, err
+	}
+
+	permalinkPreviewedPost := post.GetPreviewPost()
+	for _, cm := range channelMembers {
+		if permalinkPreviewedPost != nil {
+			post.Metadata.Embeds[0].Data = permalinkPreviewedPost
+		}
+
+		postForUser := a.sanitizePostMetadataForUserAndChannel(post, permalinkPreviewedPost, permalinkPreviewedChannel, cm.UserId)
+
 		// Using DeepCopy here to avoid a race condition
 		// between publishing the event and setting the "post" data value below.
 		messageCopy := message.DeepCopy()
@@ -1299,7 +1305,7 @@ func (a *App) SearchPostsInTeam(teamID string, paramsList []*model.SearchParams)
 	})
 }
 
-func (a *App) SearchPostsForUser(c *request.Context, terms string, userID string, teamID string, isOrSearch bool, includeDeletedChannels bool, timeZoneOffset int, page, perPage int) (*model.PostSearchResults, *model.AppError) {
+func (a *App) SearchPostsForUser(c *request.Context, terms string, userID string, teamID string, isOrSearch bool, includeDeletedChannels bool, timeZoneOffset int, page, perPage int, modifier string) (*model.PostSearchResults, *model.AppError) {
 	var postSearchResults *model.PostSearchResults
 	paramsList := model.ParseSearchParams(strings.TrimSpace(terms), timeZoneOffset)
 	includeDeleted := includeDeletedChannels && *a.Config().TeamSettings.ExperimentalViewArchivedChannels
@@ -1311,10 +1317,14 @@ func (a *App) SearchPostsForUser(c *request.Context, terms string, userID string
 	finalParamsList := []*model.SearchParams{}
 
 	for _, params := range paramsList {
+		params.Modifier = modifier
 		params.OrTerms = isOrSearch
 		params.IncludeDeletedChannels = includeDeleted
 		// Don't allow users to search for "*"
 		if params.Terms != "*" {
+			// TODO: we have to send channel ids
+			// from the front-end. Otherwise it's not possible to distinguish
+			// from just the channel name at a cross-team level.
 			// Convert channel names to channel IDs
 			params.InChannels = a.convertChannelNamesToChannelIds(c, params.InChannels, userID, teamID, includeDeletedChannels)
 			params.ExcludedChannels = a.convertChannelNamesToChannelIds(c, params.ExcludedChannels, userID, teamID, includeDeletedChannels)
@@ -1344,6 +1354,15 @@ func (a *App) SearchPostsForUser(c *request.Context, terms string, userID string
 	}
 
 	return postSearchResults, nil
+}
+
+func (a *App) GetRecentSearchesForUser(userID string) ([]*model.SearchParams, *model.AppError) {
+	searchParams, nErr := a.Srv().Store.Post().GetRecentSearchesForUser(userID)
+	if nErr != nil {
+		return nil, model.NewAppError("GetRecentSearchesForUser", "app.recent_searches.app_error", nil, nErr.Error(), http.StatusInternalServerError)
+	}
+
+	return searchParams, nil
 }
 
 func (a *App) GetFileInfosForPostWithMigration(postID string) ([]*model.FileInfo, *model.AppError) {
@@ -1496,7 +1515,6 @@ func (a *App) countThreadMentions(user *model.User, post *model.Post, teamID str
 	if nErr != nil {
 		return 0, model.NewAppError("countMentionsFromPost", "app.channel.count_posts_since.app_error", nil, nErr.Error(), http.StatusInternalServerError)
 	}
-	posts = append(posts, post)
 
 	for _, p := range posts {
 		if p.CreateAt >= timestamp {

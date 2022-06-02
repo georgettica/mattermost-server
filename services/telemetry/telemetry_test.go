@@ -112,7 +112,7 @@ func initializeMocks(cfg *model.Config) (*mocks.ServerIface, *storeMocks.Store, 
 	channelStore.On("GroupSyncedChannelCount").Return(int64(17), nil)
 
 	postStore := storeMocks.PostStore{}
-	postStore.On("AnalyticsPostCount", "", false, false).Return(int64(1000), nil)
+	postStore.On("AnalyticsPostCount", &model.PostCountOptions{}).Return(int64(1000), nil)
 	postStore.On("AnalyticsPostCountsByDay", &model.AnalyticsPostCountsOptions{TeamId: "", BotsOnly: false, YesterdayOnly: true}).Return(model.AnalyticsRows{}, nil)
 	postStore.On("AnalyticsPostCountsByDay", &model.AnalyticsPostCountsOptions{TeamId: "", BotsOnly: true, YesterdayOnly: true}).Return(model.AnalyticsRows{}, nil)
 
@@ -130,6 +130,8 @@ func initializeMocks(cfg *model.Config) (*mocks.ServerIface, *storeMocks.Store, 
 	groupStore.On("GroupMemberCount").Return(int64(32), nil)
 	groupStore.On("DistinctGroupMemberCount").Return(int64(22), nil)
 	groupStore.On("GroupCountWithAllowReference").Return(int64(13), nil)
+	groupStore.On("GroupCountBySource", model.GroupSourceCustom).Return(int64(10), nil)
+	groupStore.On("GroupCountBySource", model.GroupSourceLdap).Return(int64(2), nil)
 
 	schemeStore := storeMocks.SchemeStore{}
 	schemeStore.On("CountByScope", "channel").Return(int64(8), nil)

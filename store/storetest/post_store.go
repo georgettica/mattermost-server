@@ -27,8 +27,6 @@ func TestPostStore(t *testing.T, ss store.Store, s SqlStore) {
 	t.Run("GetSingle", func(t *testing.T) { testPostStoreGetSingle(t, ss) })
 	t.Run("Update", func(t *testing.T) { testPostStoreUpdate(t, ss) })
 	t.Run("Delete", func(t *testing.T) { testPostStoreDelete(t, ss) })
-	t.Run("Delete1Level", func(t *testing.T) { testPostStoreDelete1Level(t, ss) })
-	t.Run("Delete2Level", func(t *testing.T) { testPostStoreDelete2Level(t, ss) })
 	t.Run("PermDelete1Level", func(t *testing.T) { testPostStorePermDelete1Level(t, ss) })
 	t.Run("PermDelete1Level2", func(t *testing.T) { testPostStorePermDelete1Level2(t, ss) })
 	t.Run("GetWithChildren", func(t *testing.T) { testPostStoreGetWithChildren(t, ss) })
@@ -317,6 +315,9 @@ func testPostStoreSaveMultiple(t *testing.T, ss store.Store) {
 		replyPost3.Message = NewTestId()
 		replyPost3.RootId = rootPost.Id
 
+		// Ensure update does not occur in the same timestamp as creation
+		time.Sleep(time.Millisecond)
+
 		_, _, err = ss.Post().SaveMultiple([]*model.Post{&replyPost2, &replyPost3})
 		require.NoError(t, err)
 
@@ -566,7 +567,7 @@ func testPostStoreGetForThread(t *testing.T, ss store.Store) {
 		require.NoError(t, err)
 		_, err = ss.Post().Save(&model.Post{ChannelId: o1.ChannelId, UserId: model.NewId(), Message: NewTestId(), RootId: o1.Id})
 		require.NoError(t, err)
-		_, err = ss.Post().Save(&model.Post{ChannelId: o1.ChannelId, UserId: model.NewId(), Message: NewTestId(), RootId: o1.Id})
+		m1, err := ss.Post().Save(&model.Post{ChannelId: o1.ChannelId, UserId: model.NewId(), Message: NewTestId(), RootId: o1.Id})
 		require.NoError(t, err)
 		_, err = ss.Post().Save(&model.Post{ChannelId: o1.ChannelId, UserId: model.NewId(), Message: NewTestId(), RootId: o1.Id})
 		require.NoError(t, err)
@@ -614,6 +615,20 @@ func testPostStoreGetForThread(t *testing.T, ss store.Store) {
 		assert.LessOrEqual(t, r1.Posts[r1.Order[1]].CreateAt, firstPostCreateAt)
 		assert.False(t, r1.HasNext)
 
+		// Only with CreateAt
+		opts = model.GetPostsOptions{
+			CollapsedThreads: false,
+			PerPage:          1,
+			Direction:        "up",
+			FromCreateAt:     m1.CreateAt,
+			SkipFetchThreads: false,
+		}
+		r1, err = ss.Post().Get(context.Background(), o1.Id, opts, o1.UserId)
+		require.NoError(t, err)
+		assert.Len(t, r1.Order, 2) // including the root post
+		assert.LessOrEqual(t, r1.Posts[r1.Order[1]].CreateAt, m1.CreateAt)
+		assert.True(t, r1.HasNext)
+
 		// Non-CRT mode
 		opts = model.GetPostsOptions{
 			CollapsedThreads: false,
@@ -658,6 +673,20 @@ func testPostStoreGetForThread(t *testing.T, ss store.Store) {
 		assert.Len(t, r1.Order, 3) // including the root post
 		assert.LessOrEqual(t, r1.Posts[r1.Order[1]].CreateAt, firstPostCreateAt)
 		assert.False(t, r1.HasNext)
+
+		// Only with CreateAt
+		opts = model.GetPostsOptions{
+			CollapsedThreads: false,
+			PerPage:          1,
+			Direction:        "down",
+			FromCreateAt:     m1.CreateAt,
+			SkipFetchThreads: false,
+		}
+		r1, err = ss.Post().Get(context.Background(), o1.Id, opts, o1.UserId)
+		require.NoError(t, err)
+		assert.Len(t, r1.Order, 2) // including the root post
+		assert.GreaterOrEqual(t, r1.Posts[r1.Order[1]].CreateAt, m1.CreateAt)
+		assert.True(t, r1.HasNext)
 	})
 }
 
@@ -819,109 +848,132 @@ func testPostStoreUpdate(t *testing.T, ss store.Store) {
 }
 
 func testPostStoreDelete(t *testing.T, ss store.Store) {
-	o1 := &model.Post{}
-	o1.ChannelId = model.NewId()
-	o1.UserId = model.NewId()
-	o1.Message = model.NewRandomString(10)
-	deleteByID := model.NewId()
+	t.Run("single post, no replies", func(t *testing.T) {
+		// Create a post
+		rootPost, err := ss.Post().Save(&model.Post{
+			ChannelId: model.NewId(),
+			UserId:    model.NewId(),
+			Message:   model.NewRandomString(10),
+		})
+		require.NoError(t, err)
 
-	etag1 := ss.Post().GetEtag(o1.ChannelId, false, false)
-	require.Equal(t, 0, strings.Index(etag1, model.CurrentVersion+"."), "Invalid Etag")
+		// Verify etag generation for the channel containing the post.
+		etag1 := ss.Post().GetEtag(rootPost.ChannelId, false, false)
+		require.Equal(t, 0, strings.Index(etag1, model.CurrentVersion+"."), "Invalid Etag")
 
-	o1, err := ss.Post().Save(o1)
-	require.NoError(t, err)
+		// Verify the created post.
+		r1, err := ss.Post().Get(context.Background(), rootPost.Id, model.GetPostsOptions{}, "")
+		require.NoError(t, err)
+		require.NotNil(t, r1.Posts[rootPost.Id])
+		require.Equal(t, rootPost, r1.Posts[rootPost.Id])
 
-	r1, err := ss.Post().Get(context.Background(), o1.Id, model.GetPostsOptions{}, "")
-	require.NoError(t, err)
-	require.Equal(t, r1.Posts[o1.Id].CreateAt, o1.CreateAt, "invalid returned post")
+		// Mark the post as deleted by the user identified with deleteByID.
+		deleteByID := model.NewId()
+		err = ss.Post().Delete(rootPost.Id, model.GetMillis(), deleteByID)
+		require.NoError(t, err)
 
-	err = ss.Post().Delete(o1.Id, model.GetMillis(), deleteByID)
-	require.NoError(t, err)
+		// Ensure the appropriate posts prop reflects the user deleting the post.
+		posts, err := ss.Post().GetPostsCreatedAt(rootPost.ChannelId, rootPost.CreateAt)
+		require.NoError(t, err)
+		require.NotEmpty(t, posts)
+		assert.Equal(t, deleteByID, posts[0].GetProp(model.PostPropsDeleteBy), "unexpected Props[model.PostPropsDeleteBy]")
 
-	posts, _ := ss.Post().GetPostsCreatedAt(o1.ChannelId, o1.CreateAt)
-	post := posts[0]
-	actual := post.GetProp(model.PostPropsDeleteBy)
+		// Verify that the post is no longer fetched by default.
+		_, err = ss.Post().Get(context.Background(), rootPost.Id, model.GetPostsOptions{}, "")
+		require.Error(t, err, "fetching deleted post should have failed")
+		require.IsType(t, &store.ErrNotFound{}, err)
 
-	assert.Equal(t, deleteByID, actual, "Expected (*Post).Props[model.PostPropsDeleteBy] to be %v but got %v.", deleteByID, actual)
+		// Verify etag generation for the channel containing the now deleted post.
+		etag2 := ss.Post().GetEtag(rootPost.ChannelId, false, false)
+		require.Equal(t, 0, strings.Index(etag2, model.CurrentVersion+"."), "Invalid Etag")
+	})
 
-	r3, err := ss.Post().Get(context.Background(), o1.Id, model.GetPostsOptions{}, "")
-	require.Error(t, err, "Missing id should have failed - PostList %v", r3)
+	t.Run("thread with one reply", func(t *testing.T) {
+		// Create a root post
+		rootPost, err := ss.Post().Save(&model.Post{
+			ChannelId: model.NewId(),
+			UserId:    model.NewId(),
+			Message:   NewTestId(),
+		})
+		require.NoError(t, err)
 
-	etag2 := ss.Post().GetEtag(o1.ChannelId, false, false)
-	require.Equal(t, 0, strings.Index(etag2, model.CurrentVersion+"."), "Invalid Etag")
-}
+		// Reply to that root post
+		replyPost, err := ss.Post().Save(&model.Post{
+			ChannelId: rootPost.ChannelId,
+			UserId:    model.NewId(),
+			Message:   NewTestId(),
+			RootId:    rootPost.Id,
+		})
+		require.NoError(t, err)
 
-func testPostStoreDelete1Level(t *testing.T, ss store.Store) {
-	o1 := &model.Post{}
-	o1.ChannelId = model.NewId()
-	o1.UserId = model.NewId()
-	o1.Message = NewTestId()
-	o1, err := ss.Post().Save(o1)
-	require.NoError(t, err)
+		// Delete the root post
+		err = ss.Post().Delete(rootPost.Id, model.GetMillis(), "")
+		require.NoError(t, err)
 
-	o2 := &model.Post{}
-	o2.ChannelId = o1.ChannelId
-	o2.UserId = model.NewId()
-	o2.Message = NewTestId()
-	o2.RootId = o1.Id
-	o2, err = ss.Post().Save(o2)
-	require.NoError(t, err)
+		// Verify the root post deleted
+		_, err = ss.Post().Get(context.Background(), rootPost.Id, model.GetPostsOptions{}, "")
+		require.Error(t, err, "Deleted id should have failed")
+		require.IsType(t, &store.ErrNotFound{}, err)
 
-	err = ss.Post().Delete(o1.Id, model.GetMillis(), "")
-	require.NoError(t, err)
+		// Verify the reply post deleted
+		_, err = ss.Post().Get(context.Background(), replyPost.Id, model.GetPostsOptions{}, "")
+		require.Error(t, err, "Deleted id should have failed")
+		require.IsType(t, &store.ErrNotFound{}, err)
+	})
 
-	_, err = ss.Post().Get(context.Background(), o1.Id, model.GetPostsOptions{}, "")
-	require.Error(t, err, "Deleted id should have failed")
+	t.Run("thread with multiple replies", func(t *testing.T) {
+		// Create a root post
+		rootPost1, err := ss.Post().Save(&model.Post{
+			ChannelId: model.NewId(),
+			UserId:    model.NewId(),
+			Message:   NewTestId(),
+		})
+		require.NoError(t, err)
 
-	_, err = ss.Post().Get(context.Background(), o2.Id, model.GetPostsOptions{}, "")
-	require.Error(t, err, "Deleted id should have failed")
-}
+		// Reply to that root post
+		replyPost1, err := ss.Post().Save(&model.Post{
+			ChannelId: rootPost1.ChannelId,
+			UserId:    model.NewId(),
+			Message:   NewTestId(),
+			RootId:    rootPost1.Id,
+		})
+		require.NoError(t, err)
 
-func testPostStoreDelete2Level(t *testing.T, ss store.Store) {
-	o1 := &model.Post{}
-	o1.ChannelId = model.NewId()
-	o1.UserId = model.NewId()
-	o1.Message = NewTestId()
-	o1, err := ss.Post().Save(o1)
-	require.NoError(t, err)
+		// Reply to that root post a second time
+		replyPost2, err := ss.Post().Save(&model.Post{
+			ChannelId: rootPost1.ChannelId,
+			UserId:    model.NewId(),
+			Message:   NewTestId(),
+			RootId:    rootPost1.Id,
+		})
+		require.NoError(t, err)
 
-	o2 := &model.Post{}
-	o2.ChannelId = o1.ChannelId
-	o2.UserId = model.NewId()
-	o2.Message = NewTestId()
-	o2.RootId = o1.Id
-	o2, err = ss.Post().Save(o2)
-	require.NoError(t, err)
+		// Create another root post in a separate channel
+		rootPost2, err := ss.Post().Save(&model.Post{
+			ChannelId: model.NewId(),
+			UserId:    model.NewId(),
+			Message:   NewTestId(),
+		})
+		require.NoError(t, err)
 
-	o3 := &model.Post{}
-	o3.ChannelId = o1.ChannelId
-	o3.UserId = model.NewId()
-	o3.Message = NewTestId()
-	o3.RootId = o1.Id
-	o3, err = ss.Post().Save(o3)
-	require.NoError(t, err)
+		// Delete the root post
+		err = ss.Post().Delete(rootPost1.Id, model.GetMillis(), "")
+		require.NoError(t, err)
 
-	o4 := &model.Post{}
-	o4.ChannelId = model.NewId()
-	o4.UserId = model.NewId()
-	o4.Message = NewTestId()
-	o4, err = ss.Post().Save(o4)
-	require.NoError(t, err)
+		// Verify the root post and replies deleted
+		_, err = ss.Post().Get(context.Background(), rootPost1.Id, model.GetPostsOptions{}, "")
+		require.Error(t, err, "Deleted id should have failed")
 
-	err = ss.Post().Delete(o1.Id, model.GetMillis(), "")
-	require.NoError(t, err)
+		_, err = ss.Post().Get(context.Background(), replyPost1.Id, model.GetPostsOptions{}, "")
+		require.Error(t, err, "Deleted id should have failed")
 
-	_, err = ss.Post().Get(context.Background(), o1.Id, model.GetPostsOptions{}, "")
-	require.Error(t, err, "Deleted id should have failed")
+		_, err = ss.Post().Get(context.Background(), replyPost2.Id, model.GetPostsOptions{}, "")
+		require.Error(t, err, "Deleted id should have failed")
 
-	_, err = ss.Post().Get(context.Background(), o2.Id, model.GetPostsOptions{}, "")
-	require.Error(t, err, "Deleted id should have failed")
-
-	_, err = ss.Post().Get(context.Background(), o3.Id, model.GetPostsOptions{}, "")
-	require.Error(t, err, "Deleted id should have failed")
-
-	_, err = ss.Post().Get(context.Background(), o4.Id, model.GetPostsOptions{}, "")
-	require.NoError(t, err)
+		// Verify other root posts remain undeleted.
+		_, err = ss.Post().Get(context.Background(), rootPost2.Id, model.GetPostsOptions{}, "")
+		require.NoError(t, err)
+	})
 }
 
 func testPostStorePermDelete1Level(t *testing.T, ss store.Store) {
@@ -2091,30 +2143,44 @@ func testPostCountsByDay(t *testing.T, ss store.Store) {
 	require.NoError(t, err)
 	assert.Equal(t, float64(1), r1[0].Value)
 
-	// total
-	r2, err := ss.Post().AnalyticsPostCount(t1.Id, false, false)
+	// total for single team
+	r2, err := ss.Post().AnalyticsPostCount(&model.PostCountOptions{TeamId: t1.Id})
 	require.NoError(t, err)
 	assert.Equal(t, int64(6), r2)
 
 	// total across teams
-	r2, err = ss.Post().AnalyticsPostCount("", false, false)
+	r2, err = ss.Post().AnalyticsPostCount(&model.PostCountOptions{})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, r2, int64(6))
 
 	// total across teams with files
-	r2, err = ss.Post().AnalyticsPostCount("", true, false)
+	r2, err = ss.Post().AnalyticsPostCount(&model.PostCountOptions{MustHaveFile: true})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, r2, int64(3))
 
-	// total across teams with hastags
-	r2, err = ss.Post().AnalyticsPostCount("", false, true)
+	// total across teams with hashtags
+	r2, err = ss.Post().AnalyticsPostCount(&model.PostCountOptions{MustHaveHashtag: true})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, r2, int64(2))
 
-	// total across teams with hastags and files
-	r2, err = ss.Post().AnalyticsPostCount("", true, true)
+	// total across teams with hashtags and files
+	r2, err = ss.Post().AnalyticsPostCount(&model.PostCountOptions{MustHaveFile: true, MustHaveHashtag: true})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, r2, int64(1))
+
+	// delete 1 post
+	err = ss.Post().Delete(o1.Id, 1, o1.UserId)
+	require.NoError(t, err)
+
+	// total for single team with the deleted post excluded
+	r2, err = ss.Post().AnalyticsPostCount(&model.PostCountOptions{TeamId: t1.Id, ExcludeDeleted: true})
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), r2)
+
+	// total users only posts for single team with the deleted post excluded
+	r2, err = ss.Post().AnalyticsPostCount(&model.PostCountOptions{TeamId: t1.Id, ExcludeDeleted: true, UsersPostsOnly: true})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), r2)
 }
 
 func testPostStoreGetFlaggedPostsForTeam(t *testing.T, ss store.Store, s SqlStore) {
@@ -3063,8 +3129,8 @@ func testPostStorePermanentDeleteBatch(t *testing.T, ss store.Store) {
 	t.Run("with data retention policies", func(t *testing.T) {
 		channelPolicy, err2 := ss.RetentionPolicy().Save(&model.RetentionPolicyWithTeamAndChannelIDs{
 			RetentionPolicy: model.RetentionPolicy{
-				DisplayName:  "DisplayName",
-				PostDuration: model.NewInt64(30),
+				DisplayName:      "DisplayName",
+				PostDurationDays: model.NewInt64(30),
 			},
 			ChannelIDs: []string{channel.Id},
 		})
@@ -3083,7 +3149,7 @@ func testPostStorePermanentDeleteBatch(t *testing.T, ss store.Store) {
 		_, err2 = ss.Post().Get(context.Background(), post.Id, model.GetPostsOptions{}, "")
 		require.NoError(t, err2, "global policy should have been ignored due to granular policy")
 
-		nowMillis := post.CreateAt + *channelPolicy.PostDuration*24*60*60*1000 + 1
+		nowMillis := post.CreateAt + *channelPolicy.PostDurationDays*model.DayInMilliseconds + 1
 		_, _, err2 = ss.Post().PermanentDeleteBatchForRetentionPolicies(nowMillis, 0, 1000, model.RetentionPolicyCursor{})
 		require.NoError(t, err2)
 		_, err2 = ss.Post().Get(context.Background(), post.Id, model.GetPostsOptions{}, "")
@@ -3092,8 +3158,8 @@ func testPostStorePermanentDeleteBatch(t *testing.T, ss store.Store) {
 		// Create a team policy which is stricter than the channel policy
 		teamPolicy, err2 := ss.RetentionPolicy().Save(&model.RetentionPolicyWithTeamAndChannelIDs{
 			RetentionPolicy: model.RetentionPolicy{
-				DisplayName:  "DisplayName",
-				PostDuration: model.NewInt64(20),
+				DisplayName:      "DisplayName",
+				PostDurationDays: model.NewInt64(20),
 			},
 			TeamIDs: []string{team.Id},
 		})
@@ -3102,7 +3168,7 @@ func testPostStorePermanentDeleteBatch(t *testing.T, ss store.Store) {
 		post, err2 = ss.Post().Save(post)
 		require.NoError(t, err2)
 
-		nowMillis = post.CreateAt + *teamPolicy.PostDuration*24*60*60*1000 + 1
+		nowMillis = post.CreateAt + *teamPolicy.PostDurationDays*model.DayInMilliseconds + 1
 		_, _, err2 = ss.Post().PermanentDeleteBatchForRetentionPolicies(nowMillis, 0, 1000, model.RetentionPolicyCursor{})
 		require.NoError(t, err2)
 		_, err2 = ss.Post().Get(context.Background(), post.Id, model.GetPostsOptions{}, "")
@@ -3144,8 +3210,8 @@ func testPostStorePermanentDeleteBatch(t *testing.T, ss store.Store) {
 
 		channelPolicy, err2 := ss.RetentionPolicy().Save(&model.RetentionPolicyWithTeamAndChannelIDs{
 			RetentionPolicy: model.RetentionPolicy{
-				DisplayName:  "DisplayName",
-				PostDuration: model.NewInt64(30),
+				DisplayName:      "DisplayName",
+				PostDurationDays: model.NewInt64(30),
 			},
 			ChannelIDs: []string{c1.Id},
 		})
@@ -3153,8 +3219,8 @@ func testPostStorePermanentDeleteBatch(t *testing.T, ss store.Store) {
 		defer ss.RetentionPolicy().Delete(channelPolicy.ID)
 		teamPolicy, err2 := ss.RetentionPolicy().Save(&model.RetentionPolicyWithTeamAndChannelIDs{
 			RetentionPolicy: model.RetentionPolicy{
-				DisplayName:  "DisplayName",
-				PostDuration: model.NewInt64(30),
+				DisplayName:      "DisplayName",
+				PostDurationDays: model.NewInt64(30),
 			},
 			TeamIDs: []string{team.Id},
 		})
@@ -3186,7 +3252,7 @@ func testPostStorePermanentDeleteBatch(t *testing.T, ss store.Store) {
 		})
 		require.NoError(t, err2)
 
-		nowMillis := int64(1 + 30*24*60*60*1000 + 1)
+		nowMillis := int64(1 + 30*model.DayInMilliseconds + 1)
 		deleted, _, err2 := ss.Post().PermanentDeleteBatchForRetentionPolicies(nowMillis, 2, 1000, model.RetentionPolicyCursor{})
 		require.NoError(t, err2)
 		require.Equal(t, int64(3), deleted)

@@ -550,10 +550,10 @@ func (s *TimerLayerChannelStore) AnalyticsTypeCount(teamID string, channelType m
 	return result, err
 }
 
-func (s *TimerLayerChannelStore) Autocomplete(userID string, term string, includeDeleted bool) (model.ChannelListWithTeamData, error) {
+func (s *TimerLayerChannelStore) Autocomplete(userID string, term string, includeDeleted bool, isGuest bool) (model.ChannelListWithTeamData, error) {
 	start := timemodule.Now()
 
-	result, err := s.ChannelStore.Autocomplete(userID, term, includeDeleted)
+	result, err := s.ChannelStore.Autocomplete(userID, term, includeDeleted, isGuest)
 
 	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
 	if s.Root.Metrics != nil {
@@ -566,10 +566,10 @@ func (s *TimerLayerChannelStore) Autocomplete(userID string, term string, includ
 	return result, err
 }
 
-func (s *TimerLayerChannelStore) AutocompleteInTeam(teamID string, userID string, term string, includeDeleted bool) (model.ChannelList, error) {
+func (s *TimerLayerChannelStore) AutocompleteInTeam(teamID string, userID string, term string, includeDeleted bool, isGuest bool) (model.ChannelList, error) {
 	start := timemodule.Now()
 
-	result, err := s.ChannelStore.AutocompleteInTeam(teamID, userID, term, includeDeleted)
+	result, err := s.ChannelStore.AutocompleteInTeam(teamID, userID, term, includeDeleted, isGuest)
 
 	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
 	if s.Root.Metrics != nil {
@@ -1189,22 +1189,6 @@ func (s *TimerLayerChannelStore) GetForPost(postID string) (*model.Channel, erro
 	return result, err
 }
 
-func (s *TimerLayerChannelStore) GetFromMaster(id string) (*model.Channel, error) {
-	start := timemodule.Now()
-
-	result, err := s.ChannelStore.GetFromMaster(id)
-
-	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
-	if s.Root.Metrics != nil {
-		success := "false"
-		if err == nil {
-			success = "true"
-		}
-		s.Root.Metrics.ObserveStoreMethodDuration("ChannelStore.GetFromMaster", success, elapsed)
-	}
-	return result, err
-}
-
 func (s *TimerLayerChannelStore) GetGuestCount(channelID string, allowFromCache bool) (int64, error) {
 	start := timemodule.Now()
 
@@ -1217,6 +1201,22 @@ func (s *TimerLayerChannelStore) GetGuestCount(channelID string, allowFromCache 
 			success = "true"
 		}
 		s.Root.Metrics.ObserveStoreMethodDuration("ChannelStore.GetGuestCount", success, elapsed)
+	}
+	return result, err
+}
+
+func (s *TimerLayerChannelStore) GetMany(ids []string, allowFromCache bool) (model.ChannelList, error) {
+	start := timemodule.Now()
+
+	result, err := s.ChannelStore.GetMany(ids, allowFromCache)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("ChannelStore.GetMany", success, elapsed)
 	}
 	return result, err
 }
@@ -1365,10 +1365,10 @@ func (s *TimerLayerChannelStore) GetMembersForUser(teamID string, userID string)
 	return result, err
 }
 
-func (s *TimerLayerChannelStore) GetMembersForUserWithCursor(userID string, afterChannel string, afterUser string, limit int, lastUpdateAt int) (model.ChannelMembers, error) {
+func (s *TimerLayerChannelStore) GetMembersForUserWithCursor(userID string, teamID string, opts *store.ChannelMemberGraphQLSearchOpts) (model.ChannelMembers, error) {
 	start := timemodule.Now()
 
-	result, err := s.ChannelStore.GetMembersForUserWithCursor(userID, afterChannel, afterUser, limit, lastUpdateAt)
+	result, err := s.ChannelStore.GetMembersForUserWithCursor(userID, teamID, opts)
 
 	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
 	if s.Root.Metrics != nil {
@@ -1601,6 +1601,38 @@ func (s *TimerLayerChannelStore) GetTeamMembersForChannel(channelID string) ([]s
 			success = "true"
 		}
 		s.Root.Metrics.ObserveStoreMethodDuration("ChannelStore.GetTeamMembersForChannel", success, elapsed)
+	}
+	return result, err
+}
+
+func (s *TimerLayerChannelStore) GetTopChannelsForTeamSince(teamID string, userID string, since int64, offset int, limit int) (*model.TopChannelList, error) {
+	start := timemodule.Now()
+
+	result, err := s.ChannelStore.GetTopChannelsForTeamSince(teamID, userID, since, offset, limit)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("ChannelStore.GetTopChannelsForTeamSince", success, elapsed)
+	}
+	return result, err
+}
+
+func (s *TimerLayerChannelStore) GetTopChannelsForUserSince(userID string, teamID string, since int64, offset int, limit int) (*model.TopChannelList, error) {
+	start := timemodule.Now()
+
+	result, err := s.ChannelStore.GetTopChannelsForUserSince(userID, teamID, since, offset, limit)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("ChannelStore.GetTopChannelsForUserSince", success, elapsed)
 	}
 	return result, err
 }
@@ -3835,6 +3867,22 @@ func (s *TimerLayerGroupStore) GroupCount() (int64, error) {
 	return result, err
 }
 
+func (s *TimerLayerGroupStore) GroupCountBySource(source model.GroupSource) (int64, error) {
+	start := timemodule.Now()
+
+	result, err := s.GroupStore.GroupCountBySource(source)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("GroupStore.GroupCountBySource", success, elapsed)
+	}
+	return result, err
+}
+
 func (s *TimerLayerGroupStore) GroupCountWithAllowReference() (int64, error) {
 	start := timemodule.Now()
 
@@ -4811,10 +4859,10 @@ func (s *TimerLayerPluginStore) SetWithOptions(pluginID string, key string, valu
 	return result, err
 }
 
-func (s *TimerLayerPostStore) AnalyticsPostCount(teamID string, mustHaveFile bool, mustHaveHashtag bool) (int64, error) {
+func (s *TimerLayerPostStore) AnalyticsPostCount(options *model.PostCountOptions) (int64, error) {
 	start := timemodule.Now()
 
-	result, err := s.PostStore.AnalyticsPostCount(teamID, mustHaveFile, mustHaveHashtag)
+	result, err := s.PostStore.AnalyticsPostCount(options)
 
 	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
 	if s.Root.Metrics != nil {
@@ -5258,6 +5306,22 @@ func (s *TimerLayerPostStore) GetPostsSinceForSync(options model.GetPostsSinceFo
 	return result, resultVar1, err
 }
 
+func (s *TimerLayerPostStore) GetRecentSearchesForUser(userID string) ([]*model.SearchParams, error) {
+	start := timemodule.Now()
+
+	result, err := s.PostStore.GetRecentSearchesForUser(userID)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("PostStore.GetRecentSearchesForUser", success, elapsed)
+	}
+	return result, err
+}
+
 func (s *TimerLayerPostStore) GetRepliesForExport(parentID string) ([]*model.ReplyForExport, error) {
 	start := timemodule.Now()
 
@@ -5319,6 +5383,22 @@ func (s *TimerLayerPostStore) InvalidateLastPostTimeCache(channelID string) {
 		}
 		s.Root.Metrics.ObserveStoreMethodDuration("PostStore.InvalidateLastPostTimeCache", success, elapsed)
 	}
+}
+
+func (s *TimerLayerPostStore) LogRecentSearch(userID string, searchQuery []byte, createAt int64) error {
+	start := timemodule.Now()
+
+	err := s.PostStore.LogRecentSearch(userID, searchQuery, createAt)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("PostStore.LogRecentSearch", success, elapsed)
+	}
+	return err
 }
 
 func (s *TimerLayerPostStore) Overwrite(post *model.Post) (*model.Post, error) {
@@ -5813,6 +5893,38 @@ func (s *TimerLayerReactionStore) GetForPostSince(postId string, since int64, ex
 			success = "true"
 		}
 		s.Root.Metrics.ObserveStoreMethodDuration("ReactionStore.GetForPostSince", success, elapsed)
+	}
+	return result, err
+}
+
+func (s *TimerLayerReactionStore) GetTopForTeamSince(teamID string, userID string, since int64, offset int, limit int) (*model.TopReactionList, error) {
+	start := timemodule.Now()
+
+	result, err := s.ReactionStore.GetTopForTeamSince(teamID, userID, since, offset, limit)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("ReactionStore.GetTopForTeamSince", success, elapsed)
+	}
+	return result, err
+}
+
+func (s *TimerLayerReactionStore) GetTopForUserSince(userID string, teamID string, since int64, offset int, limit int) (*model.TopReactionList, error) {
+	start := timemodule.Now()
+
+	result, err := s.ReactionStore.GetTopForUserSince(userID, teamID, since, offset, limit)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("ReactionStore.GetTopForUserSince", success, elapsed)
 	}
 	return result, err
 }
@@ -7752,6 +7864,22 @@ func (s *TimerLayerTeamStore) GetCommonTeamIDsForTwoUsers(userID string, otherUs
 	return result, err
 }
 
+func (s *TimerLayerTeamStore) GetMany(ids []string) ([]*model.Team, error) {
+	start := timemodule.Now()
+
+	result, err := s.TeamStore.GetMany(ids)
+
+	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
+	if s.Root.Metrics != nil {
+		success := "false"
+		if err == nil {
+			success = "true"
+		}
+		s.Root.Metrics.ObserveStoreMethodDuration("TeamStore.GetMany", success, elapsed)
+	}
+	return result, err
+}
+
 func (s *TimerLayerTeamStore) GetMember(ctx context.Context, teamID string, userID string) (*model.TeamMember, error) {
 	start := timemodule.Now()
 
@@ -7848,10 +7976,10 @@ func (s *TimerLayerTeamStore) GetTeamsByUserId(userID string) ([]*model.Team, er
 	return result, err
 }
 
-func (s *TimerLayerTeamStore) GetTeamsForUser(ctx context.Context, userID string) ([]*model.TeamMember, error) {
+func (s *TimerLayerTeamStore) GetTeamsForUser(ctx context.Context, userID string, excludeTeamID string, includeDeleted bool) ([]*model.TeamMember, error) {
 	start := timemodule.Now()
 
-	result, err := s.TeamStore.GetTeamsForUser(ctx, userID)
+	result, err := s.TeamStore.GetTeamsForUser(ctx, userID, excludeTeamID, includeDeleted)
 
 	elapsed := float64(timemodule.Since(start)) / float64(timemodule.Second)
 	if s.Root.Metrics != nil {

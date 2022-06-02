@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	sq "github.com/Masterminds/squirrel"
+	sq "github.com/mattermost/squirrel"
 	"github.com/pkg/errors"
 
 	"github.com/mattermost/mattermost-server/v6/model"
@@ -1718,6 +1718,10 @@ func (s *SqlGroupStore) PermittedSyncableAdmins(syncableID string, syncableType 
 
 func (s *SqlGroupStore) GroupCount() (int64, error) {
 	return s.countTable("UserGroups")
+}
+
+func (s *SqlGroupStore) GroupCountBySource(source model.GroupSource) (int64, error) {
+	return s.countTableWithSelectAndWhere("COUNT(*)", "UserGroups", sq.Eq{"Source": source, "DeleteAt": 0})
 }
 
 func (s *SqlGroupStore) GroupTeamCount() (int64, error) {

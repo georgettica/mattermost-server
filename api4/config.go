@@ -140,10 +140,35 @@ func updateConfig(c *Context, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Do not allow plugin uploads to be toggled through the API
-	cfg.PluginSettings.EnableUploads = appCfg.PluginSettings.EnableUploads
+	*cfg.PluginSettings.EnableUploads = *appCfg.PluginSettings.EnableUploads
 
 	// Do not allow certificates to be changed through the API
+	// This shallow-copies the slice header. So be careful if there are concurrent
+	// modifications to the slice.
 	cfg.PluginSettings.SignaturePublicKeyFiles = appCfg.PluginSettings.SignaturePublicKeyFiles
+
+	// Do not allow marketplace URL to be toggled through the API if EnableUploads are disabled.
+	if cfg.PluginSettings.EnableUploads != nil && !*appCfg.PluginSettings.EnableUploads {
+		*cfg.PluginSettings.MarketplaceURL = *appCfg.PluginSettings.MarketplaceURL
+	}
+
+	if err := c.App.CheckFreemiumLimitsForConfigSave(appCfg, cfg); err != nil {
+		c.Err = err
+		return
+	}
+
+	// There are some settings that cannot be changed in a cloud env
+	if c.App.Channels().License() != nil && *c.App.Channels().License().Features.Cloud {
+		diffs, diffErr := config.DiffTags(appCfg, cfg, "access", "cloud_restrictable")
+		if diffErr != nil {
+			c.Err = model.NewAppError("updateConfig", "api.config.update_config.diff.app_error", nil, diffErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(diffs) > 0 {
+			c.Err = model.NewAppError("updateConfig", "api.config.update_config.not_allowed_security.app_error", map[string]interface{}{"Name": diffs[0].Path}, "", http.StatusForbidden)
+			return
+		}
+	}
 
 	c.App.HandleMessageExportConfig(cfg, appCfg)
 
@@ -260,6 +285,20 @@ func patchConfig(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Do not allow marketplace URL to be toggled if plugin uploads are disabled.
+	if cfg.PluginSettings.MarketplaceURL != nil && cfg.PluginSettings.EnableUploads != nil {
+		// Breaking it down to 2 conditions to make it simple.
+		if *cfg.PluginSettings.MarketplaceURL != *appCfg.PluginSettings.MarketplaceURL && !*cfg.PluginSettings.EnableUploads {
+			c.Err = model.NewAppError("patchConfig", "api.config.update_config.not_allowed_security.app_error", map[string]interface{}{"Name": "PluginSettings.MarketplaceURL"}, "", http.StatusForbidden)
+			return
+		}
+	}
+
+	if err := c.App.CheckFreemiumLimitsForConfigSave(appCfg, cfg); err != nil {
+		c.Err = err
+		return
+	}
+
 	if cfg.MessageExportSettings.EnableExport != nil {
 		c.App.HandleMessageExportConfig(cfg, appCfg)
 	}
@@ -271,6 +310,19 @@ func patchConfig(c *Context, w http.ResponseWriter, r *http.Request) {
 	if mergeErr != nil {
 		c.Err = model.NewAppError("patchConfig", "api.config.update_config.restricted_merge.app_error", nil, mergeErr.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// There are some settings that cannot be changed in a cloud env
+	if c.App.Channels().License() != nil && *c.App.Channels().License().Features.Cloud {
+		diffs, diffErr := config.DiffTags(appCfg, updatedCfg, "access", "cloud_restrictable")
+		if diffErr != nil {
+			c.Err = model.NewAppError("patchConfig", "api.config.update_config.diff.app_error", nil, diffErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(diffs) > 0 {
+			c.Err = model.NewAppError("patchConfig", "api.config.update_config.not_allowed_security.app_error", map[string]interface{}{"Name": diffs[0].Path}, "", http.StatusForbidden)
+			return
+		}
 	}
 
 	err := updatedCfg.IsValid()

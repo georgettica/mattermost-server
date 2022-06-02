@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +25,8 @@ import (
 
 	"github.com/microcosm-cc/bluemonday"
 )
+
+const serverInactivityHours = 100
 
 func (es *Service) SendChangeUsernameEmail(newUsername, email, locale, siteURL string) error {
 	T := i18n.GetUserTranslations(locale)
@@ -226,6 +230,32 @@ func (es *Service) SendWelcomeEmail(userID string, email string, verified bool, 
 	return nil
 }
 
+func (es *Service) SendCloudUpgradeConfirmationEmail(userEmail, name, trialEndDate, locale, siteURL, workspaceName string) error {
+	T := i18n.GetUserTranslations(locale)
+	subject := T("api.templates.cloud_upgrade_confirmation.subject")
+
+	data := es.NewEmailTemplateData(locale)
+	data.Props["Title"] = T("api.templates.cloud_upgrade_confirmation.title")
+	data.Props["SubTitle"] = T("api.templates.cloud_upgrade_confirmation.subtitle", map[string]interface{}{"WorkspaceName": workspaceName, "TrialEnd": trialEndDate})
+	data.Props["SiteURL"] = siteURL
+	data.Props["ButtonURL"] = siteURL
+	data.Props["Button"] = T("api.templates.cloud_welcome_email.button")
+	data.Props["QuestionTitle"] = T("api.templates.questions_footer.title")
+	data.Props["QuestionInfo"] = T("api.templates.questions_footer.info")
+	data.Props["SupportEmail"] = *es.config().SupportSettings.SupportEmail
+
+	body, err := es.templatesContainer.RenderToString("cloud_upgrade_confirmation", data)
+	if err != nil {
+		return err
+	}
+
+	if err := es.sendEmailWithCustomReplyTo(userEmail, subject, body, *es.config().SupportSettings.SupportEmail); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (es *Service) SendCloudTrialEndWarningEmail(userEmail, name, trialEndDate, locale, siteURL string) error {
 	T := i18n.GetUserTranslations(locale)
 	subject := T("api.templates.cloud_trial_ending_email.subject")
@@ -244,9 +274,10 @@ func (es *Service) SendCloudTrialEndWarningEmail(userEmail, name, trialEndDate, 
 		return err
 	}
 
-	if err := es.sendMail(userEmail, subject, body); err != nil {
+	if err := es.sendEmailWithCustomReplyTo(userEmail, subject, body, *es.config().SupportSettings.SupportEmail); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -271,9 +302,10 @@ func (es *Service) SendCloudTrialEndedEmail(userEmail, name, locale, siteURL str
 		return err
 	}
 
-	if err := es.sendMail(userEmail, subject, body); err != nil {
+	if err := es.sendEmailWithCustomReplyTo(userEmail, subject, body, *es.config().SupportSettings.SupportEmail); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -310,7 +342,7 @@ func (es *Service) SendCloudWelcomeEmail(userEmail, locale, teamInviteID, workSp
 		return err
 	}
 
-	if err := es.sendMail(userEmail, subject, body); err != nil {
+	if err := es.sendEmailWithCustomReplyTo(userEmail, subject, body, *es.config().SupportSettings.SupportEmail); err != nil {
 		return err
 	}
 
@@ -604,6 +636,153 @@ func (es *Service) SendGuestInviteEmails(team *model.Team, channels []*model.Cha
 	return nil
 }
 
+func (es *Service) SendInviteEmailsToTeamAndChannels(
+	team *model.Team,
+	channels []*model.Channel,
+	senderName string,
+	senderUserId string,
+	senderProfileImage []byte,
+	invites []string,
+	siteURL string,
+	reminderData *model.TeamInviteReminderData,
+	message string,
+	errorWhenNotSent bool,
+) ([]*model.EmailInviteWithError, error) {
+	if es.perHourEmailRateLimiter == nil {
+		return nil, NoRateLimiterError
+	}
+	rateLimited, result, err := es.perHourEmailRateLimiter.RateLimit(senderUserId, len(invites))
+	if err != nil {
+		return nil, SetupRateLimiterError
+	}
+
+	if rateLimited {
+		mlog.Error("rate limit exceeded", mlog.Duration("RetryAfter", result.RetryAfter), mlog.Duration("ResetAfter", result.ResetAfter), mlog.String("user_id", senderUserId),
+			mlog.String("team_id", team.Id), mlog.String("retry_after_secs", fmt.Sprintf("%f", result.RetryAfter.Seconds())), mlog.String("reset_after_secs", fmt.Sprintf("%f", result.ResetAfter.Seconds())))
+		return nil, RateLimitExceededError
+	}
+
+	channelsLen := len(channels)
+
+	subject := i18n.T("api.templates.invite_team_and_channels_subject", map[string]interface{}{
+		"SenderName":      senderName,
+		"TeamDisplayName": team.DisplayName,
+		"ChannelsLen":     channelsLen,
+		"SiteName":        es.config().TeamSettings.SiteName})
+
+	title := i18n.T("api.templates.invite_team_and_channels_body.title", map[string]interface{}{
+		"SenderName":      senderName,
+		"ChannelsLen":     channelsLen,
+		"TeamDisplayName": team.DisplayName})
+
+	if channelsLen == 1 {
+		channelName := channels[0].DisplayName
+
+		subject = i18n.T("api.templates.invite_team_and_channel_subject",
+			map[string]interface{}{"SenderName": senderName,
+				"TeamDisplayName": team.DisplayName,
+				"ChannelName":     channelName,
+				"SiteName":        es.config().TeamSettings.SiteName},
+		)
+
+		title = i18n.T("api.templates.invite_team_and_channel_body.title", map[string]interface{}{
+			"SenderName":      senderName,
+			"ChannelName":     channelName,
+			"TeamDisplayName": team.DisplayName,
+		})
+	}
+
+	var invitesWithErrors []*model.EmailInviteWithError
+	for _, invite := range invites {
+		if invite == "" {
+			continue
+		}
+		channelIDs := []string{}
+		for _, channel := range channels {
+			channelIDs = append(channelIDs, channel.Id)
+		}
+
+		data := es.NewEmailTemplateData("")
+		data.Props["SiteURL"] = siteURL
+		data.Props["SubTitle"] = i18n.T("api.templates.invite_body.subTitle")
+		data.Props["Button"] = i18n.T("api.templates.invite_body.button")
+		data.Props["SenderName"] = senderName
+		data.Props["InviteFooterTitle"] = i18n.T("api.templates.invite_body_footer.title")
+		data.Props["InviteFooterInfo"] = i18n.T("api.templates.invite_body_footer.info")
+		data.Props["InviteFooterLearnMore"] = i18n.T("api.templates.invite_body_footer.learn_more")
+
+		if message != "" {
+			message = bluemonday.NewPolicy().Sanitize(message)
+		}
+		data.Props["Message"] = message
+
+		token := model.NewToken(
+			TokenTypeTeamInvitation,
+			model.MapToJSON(map[string]string{
+				"teamId":   team.Id,
+				"email":    invite,
+				"channels": strings.Join(channelIDs, " "),
+			}),
+		)
+
+		tokenProps := make(map[string]string)
+		tokenProps["email"] = invite
+		tokenProps["display_name"] = team.DisplayName
+		tokenProps["name"] = team.Name
+
+		if reminderData != nil {
+			reminder := i18n.T("api.templates.invite_body.title.reminder")
+			title = fmt.Sprintf("%s: %s", reminder, title)
+			tokenProps["reminder_interval"] = reminderData.Interval
+		}
+
+		data.Props["Title"] = title
+
+		tokenData := model.MapToJSON(tokenProps)
+
+		if err := es.store.Token().Save(token); err != nil {
+			mlog.Error("Failed to send invite email successfully ", mlog.Err(err))
+			continue
+		}
+		data.Props["ButtonURL"] = fmt.Sprintf("%s/signup_user_complete/?d=%s&t=%s", siteURL, url.QueryEscape(tokenData), url.QueryEscape(token.Token))
+
+		senderPhoto := ""
+		embeddedFiles := make(map[string]io.Reader)
+		if message != "" {
+			if senderProfileImage != nil {
+				senderPhoto = "user-avatar.png"
+				embeddedFiles = map[string]io.Reader{
+					senderPhoto: bytes.NewReader(senderProfileImage),
+				}
+			}
+		}
+		pData := postData{
+			SenderName:  senderName,
+			Message:     template.HTML(message),
+			SenderPhoto: senderPhoto,
+		}
+
+		data.Props["Posts"] = []postData{pData}
+
+		body, err := es.templatesContainer.RenderToString("invite_body", data)
+		if err != nil {
+			mlog.Error("Failed to send invite email successfully ", mlog.Err(err))
+		}
+
+		if nErr := es.SendMailWithEmbeddedFiles(invite, subject, body, embeddedFiles); nErr != nil {
+			mlog.Error("Failed to send invite email successfully", mlog.Err(nErr))
+			if errorWhenNotSent {
+				inviteWithError := &model.EmailInviteWithError{
+					Email: invite,
+					Error: &model.AppError{Message: nErr.Error()},
+				}
+				invitesWithErrors = append(invitesWithErrors, inviteWithError)
+			}
+		}
+	}
+	return invitesWithErrors, nil
+}
+
 func (es *Service) NewEmailTemplateData(locale string) templates.Data {
 	var localT i18n.TranslateFunc
 	if locale != "" {
@@ -671,16 +850,23 @@ func (es *Service) sendMail(to, subject, htmlBody string) error {
 	return es.sendMailWithCC(to, subject, htmlBody, "")
 }
 
+func (es *Service) sendEmailWithCustomReplyTo(to, subject, htmlBody, replyToAddress string) error {
+	license := es.license()
+	mailConfig := es.mailServiceConfig(replyToAddress)
+
+	return mail.SendMailUsingConfig(to, subject, htmlBody, mailConfig, license != nil && *license.Features.Compliance, "")
+}
+
 func (es *Service) sendMailWithCC(to, subject, htmlBody string, ccMail string) error {
 	license := es.license()
-	mailConfig := es.mailServiceConfig()
+	mailConfig := es.mailServiceConfig("")
 
 	return mail.SendMailUsingConfig(to, subject, htmlBody, mailConfig, license != nil && *license.Features.Compliance, ccMail)
 }
 
 func (es *Service) SendMailWithEmbeddedFiles(to, subject, htmlBody string, embeddedFiles map[string]io.Reader) error {
 	license := es.license()
-	mailConfig := es.mailServiceConfig()
+	mailConfig := es.mailServiceConfig("")
 
 	return mail.SendMailWithEmbeddedFilesUsingConfig(to, subject, htmlBody, embeddedFiles, mailConfig, license != nil && *license.Features.Compliance, "")
 }
@@ -762,6 +948,15 @@ func (es *Service) SendLicenseInactivityEmail(email, name, locale, siteURL strin
 	data.Props["Playbooks"] = T("Playbooks")
 	data.Props["Boards"] = T("Boards")
 
+	inactivityDurationHoursEnv := os.Getenv("MM_INACTIVITY_DURATION")
+	inactivityDurationHours, parseError := strconv.ParseFloat(inactivityDurationHoursEnv, 64)
+	if parseError != nil {
+		// default to 100 hours
+		inactivityDurationHours = serverInactivityHours
+	}
+
+	data.Props["FooterDisclaimer"] = T("api.templates.server_inactivity_footer_disclaimer", map[string]interface{}{"Hours": inactivityDurationHours})
+
 	body, err := es.templatesContainer.RenderToString("inactivity_body", data)
 	if err != nil {
 		return err
@@ -825,7 +1020,7 @@ func (es *Service) SendPaymentFailedEmail(email string, locale string, failedPay
 		return false, err
 	}
 
-	if err := es.sendMail(email, subject, body); err != nil {
+	if err := es.sendEmailWithCustomReplyTo(email, subject, body, *es.config().SupportSettings.SupportEmail); err != nil {
 		return false, err
 	}
 
@@ -852,7 +1047,7 @@ func (es *Service) SendNoCardPaymentFailedEmail(email string, locale string, sit
 		return err
 	}
 
-	if err := es.sendMail(email, subject, body); err != nil {
+	if err := es.sendEmailWithCustomReplyTo(email, subject, body, *es.config().SupportSettings.SupportEmail); err != nil {
 		return err
 	}
 

@@ -1169,8 +1169,8 @@ func TestGetAllChannels(t *testing.T) {
 	policyChannel := (sysManagerChannels)[0]
 	policy, err := th.App.Srv().Store.RetentionPolicy().Save(&model.RetentionPolicyWithTeamAndChannelIDs{
 		RetentionPolicy: model.RetentionPolicy{
-			DisplayName:  "Policy 1",
-			PostDuration: model.NewInt64(30),
+			DisplayName:      "Policy 1",
+			PostDurationDays: model.NewInt64(30),
 		},
 		ChannelIDs: []string{policyChannel.Id},
 	})
@@ -1338,6 +1338,46 @@ func TestSearchChannels(t *testing.T) {
 			channelNames = append(channelNames, c.Name)
 		}
 		require.NotContains(t, channelNames, th.BasicChannel.Name)
+	})
+
+	t.Run("Guests only receive autocompletion for which accounts they are a member of", func(t *testing.T) {
+		th.App.Srv().SetLicense(model.NewTestLicense(""))
+		defer th.App.Srv().SetLicense(nil)
+
+		enableGuestAccounts := *th.App.Config().GuestAccountsSettings.Enable
+		defer func() {
+			th.App.UpdateConfig(func(cfg *model.Config) { cfg.GuestAccountsSettings.Enable = &enableGuestAccounts })
+		}()
+		th.App.UpdateConfig(func(cfg *model.Config) { *cfg.GuestAccountsSettings.Enable = true })
+
+		guest := th.CreateUser()
+		_, appErr := th.SystemAdminClient.DemoteUserToGuest(guest.Id)
+		require.NoError(t, appErr)
+
+		_, resp, err := th.SystemAdminClient.AddTeamMember(th.BasicTeam.Id, guest.Id)
+		require.NoError(t, err)
+		CheckCreatedStatus(t, resp)
+
+		_, resp, err = client.Login(guest.Username, guest.Password)
+		require.NoError(t, err)
+		CheckOKStatus(t, resp)
+
+		search.Term = th.BasicChannel2.Name
+		channelList, _, err := client.SearchChannels(th.BasicTeam.Id, search)
+		require.NoError(t, err)
+
+		require.Empty(t, channelList)
+
+		_, resp, err = th.SystemAdminClient.AddChannelMember(th.BasicChannel2.Id, guest.Id)
+		require.NoError(t, err)
+		CheckCreatedStatus(t, resp)
+
+		search.Term = th.BasicChannel2.Name
+		channelList, _, err = client.SearchChannels(th.BasicTeam.Id, search)
+		require.NoError(t, err)
+
+		require.NotEmpty(t, channelList)
+		require.Equal(t, th.BasicChannel2.Id, channelList[0].Id)
 	})
 }
 
@@ -1621,8 +1661,8 @@ func TestSearchAllChannels(t *testing.T) {
 	policyChannel := sysManagerChannels[0]
 	policy, savePolicyErr := th.App.Srv().Store.RetentionPolicy().Save(&model.RetentionPolicyWithTeamAndChannelIDs{
 		RetentionPolicy: model.RetentionPolicy{
-			DisplayName:  "Policy 1",
-			PostDuration: model.NewInt64(30),
+			DisplayName:      "Policy 1",
+			PostDurationDays: model.NewInt64(30),
 		},
 		ChannelIDs: []string{policyChannel.Id},
 	})
