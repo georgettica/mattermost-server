@@ -1,13 +1,25 @@
 #!/bin/bash
 
-if [[ ! -f "go.work" ]] ;
+if [[ $1 != "true" ]] ;
 then
     echo "Creating a go.work file"
-    cat >go.work <<EOL
-go 1.18
 
-use ./
+    txt="go 1.19\n\nuse ./\n"
+    
+    if [ "$BUILD_ENTERPRISE_READY" == "true" ] 
+    then
+        txt="${txt}use ../enterprise\n"
+    fi
+    
+    if [ "$BUILD_BOARDS" == "true" ] 
+    then
+        txt="${txt}use ../focalboard/server\nuse ../focalboard/mattermost-plugin\n"
+    fi
+    
+    if [ "$BUILD_PLAYBOOKS" == "true" ]
+    then
+        txt="${txt}use ../mattermost-plugin-playbooks\n"
+    fi
 
-use ../enterprise
-EOL
+    printf "$txt" > "go.work"
 fi

@@ -236,6 +236,29 @@ func (_m *TeamStore) GetAllTeamListing() ([]*model.Team, error) {
 	return r0, r1
 }
 
+// GetByEmptyInviteID provides a mock function with given fields:
+func (_m *TeamStore) GetByEmptyInviteID() ([]*model.Team, error) {
+	ret := _m.Called()
+
+	var r0 []*model.Team
+	if rf, ok := ret.Get(0).(func() []*model.Team); ok {
+		r0 = rf()
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]*model.Team)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func() error); ok {
+		r1 = rf()
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetByInviteId provides a mock function with given fields: inviteID
 func (_m *TeamStore) GetByInviteId(inviteID string) (*model.Team, error) {
 	ret := _m.Called(inviteID)
@@ -464,6 +487,36 @@ func (_m *TeamStore) GetMembersByIds(teamID string, userIds []string, restrictio
 	}
 
 	return r0, r1
+}
+
+// GetNewTeamMembersSince provides a mock function with given fields: teamID, since, offset, limit
+func (_m *TeamStore) GetNewTeamMembersSince(teamID string, since int64, offset int, limit int) (*model.NewTeamMembersList, int64, error) {
+	ret := _m.Called(teamID, since, offset, limit)
+
+	var r0 *model.NewTeamMembersList
+	if rf, ok := ret.Get(0).(func(string, int64, int, int) *model.NewTeamMembersList); ok {
+		r0 = rf(teamID, since, offset, limit)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*model.NewTeamMembersList)
+		}
+	}
+
+	var r1 int64
+	if rf, ok := ret.Get(1).(func(string, int64, int, int) int64); ok {
+		r1 = rf(teamID, since, offset, limit)
+	} else {
+		r1 = ret.Get(1).(int64)
+	}
+
+	var r2 error
+	if rf, ok := ret.Get(2).(func(string, int64, int, int) error); ok {
+		r2 = rf(teamID, since, offset, limit)
+	} else {
+		r2 = ret.Error(2)
+	}
+
+	return r0, r1, r2
 }
 
 // GetTeamMembersForExport provides a mock function with given fields: userID
